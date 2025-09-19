@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""
+PhishGuard — simple CLI phishing URL scanner (college project / 3 credits)
+
+Lightweight checks:
+ - local blacklist (domain or full-url lines)
+ - URL format validation
+ - HTTP/HTTPS check and SSL presence (via requests)
+ - redirect chain inspection
+ - heuristics: IP-as-host, long URL, suspicious keywords, '@' trick, many subdomains
+ - simple scoring -> verdict: SAFE / POTENTIALLY DANGEROUS / PHISHING
+
+Usage:
+  python phishguard_simple.py https://example.com
+  python phishguard_simple.py example.com --blacklist my_blacklist.txt
+"""
+import argparse
+import os
+import re
+import socket
+import sys
+from urllib.parse import urlparse
+
+import requests
+import tldextract
+import validators
+
+# ---------- Config ----------
+BLACKLIST_FILE = "blacklist.txt"
+TIMEOUT = 6
+SUSPICIOUS_KEYWORDS = ("login", "secure", "account", "update", "verify",
+                       "bank", "confirm", "signin", "paypal", "apple", "reset")
+# ----------------------------
+
+def normalize_url(u: str) -> str:
+    if "://" not in u:
+        u = "http://" + u
+    return u
+
+def load_blacklist(path: str) -> set:
+    if not os.path.exists(path):
+        return set()
+    with open(path, "r", encoding="utf-8") as f:
+        lines = [ln.strip().lower() for ln in f if ln.strip() and not ln.strip().startswith("#")]
+    return set(lines)
+
+def domain_of(url: str) -> str:
+    parsed = urlparse(normalize_url(url))
+    return parsed.netloc.lower()
+
+def is_ip_host(host: str) -> bool:
+    return re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host) is not None
+
+def quick_http_info(url: str):
+    """Return (ok, final_url, status_code, error) using requests (no heavy parsing)."""
+    try:
+        r = requests.get(normalize_url(url), timeout=TIMEOUT, allow_redirects=True, headers={"User-Agent":"PhishGuard/1.0"})
+        final = r.url
+        return True, final, r.status_code, None
+    except Exception as e:
+        return False, None, None, str(e)
+
+def heuristic_score(url: str):
+    score = 0
+    reasons = []
+    norm = normalize_url(url).lower()
+    host = domain_of(norm)
+    full = norm
+
+    # ip-as-domain
+    if is_ip_host(host.split(":")[0]):
+        score += 30
+        reasons.append("Host is an IP address")
+
+    # long URL
+    if len(full) > 80:
+        score += 8
+        reasons.append("URL length > 80")
+
+    # suspicious keywords
+    for kw in SUSPICIOUS_KEYWORDS:
+        if kw in full:
+            score += 7
+            reasons.append(f"Suspicious keyword: '{kw}'")
+
+    # '@' trick
+    if "@" in full:
+        score += 15
+        reasons.append("Contains '@' (credential-steering trick)")
+
+    # many subdomains (excessive dots)
+    extracted = tldextract.extract(full)
+    sub = extracted.subdomain or ""
+    if sub.count(".") >= 2:
+        score += 5
+        reasons.append("Many subdomains (possible cloak)")
+
+    # suspicious characters, like '//' in path (beyond protocol)
+    path = urlparse(full).path or ""
+    if "//" in path:
+        score += 4
+        reasons.append("Double slashes in path")
+
+    return score, reasons
+
+def verdict(score: int) -> str:
+    if score >= 40:
+        return "PHISHING"
+    if score >= 15:
+        return "POTENTIALLY DANGEROUS"
+    return "SAFE"
+
+def analyze(url: str, blacklist_path: str):
+    out = {"url": url, "score": 0, "indicators": [], "checks": {}}
+    bl = load_blacklist(blacklist_path)
+
+    # blacklist
+    u_low = url.lower().strip()
+    host = domain_of(u_low)
+    if u_low in bl or host in bl:
+        out["score"] += 60
+        out["indicators"].append("Found in local blacklist")
+        out["checks"]["blacklist"] = True
+    else:
+        out["checks"]["blacklist"] = False
+
+    # validate URL format
+    is_valid = validators.url(normalize_url(url))
+    out["checks"]["valid_url"] = bool(is_valid)
+    if not is_valid:
+        out["score"] += 6
+        out["indicators"].append("Malformed or suspicious URL format")
+
+    # http/https and redirects
+    ok, final, status, err = quick_http_info(url)
+    out["checks"]["http_ok"] = ok
+    out["checks"]["http_status"] = status
+    out["checks"]["final_url"] = final
+    if not ok:
+        out["score"] += 8
+        out["indicators"].append(f"Request failed: {err}")
+    else:
+        # if redirected to different domain -> small penalty
+        final_host = domain_of(final)
+        if final_host != host:
+            out["score"] += 6
+            out["indicators"].append(f"Redirects to different domain: {final_host}")
+
+        # https presence
+        parsed = urlparse(normalize_url(final))
+        if parsed.scheme != "https":
+            out["score"] += 5
+            out["indicators"].append("No HTTPS on final URL")
+
+    # heuristics
+    hscore, hreasons = heuristic_score(url)
+    out["checks"]["heuristic_score"] = hscore
+    out["checks"]["heuristic_reasons"] = hreasons
+    out["score"] += hscore
+    out["indicators"].extend(hreasons)
+
+    out["final_verdict"] = verdict(out["score"])
+    return out
+
+# ---------- CLI ----------
+def main():
+    ap = argparse.ArgumentParser(description="PhishGuard — simple phishing URL checker")
+    ap.add_argument("url", help="URL or domain to scan")
+    ap.add_argument("--blacklist", default=BLACKLIST_FILE, help="path to local blacklist file")
+    args = ap.parse_args()
+
+    print(f"[PhishGuard] Scanning: {args.url}")
+    res = analyze(args.url, args.blacklist)
+
+    print("\n--- Verdict ---")
+    print("URL:", res["url"])
+    print("Score:", res["score"])
+    print("Verdict:", res["final_verdict"])
+    print("\nChecks:")
+    for k, v in res["checks"].items():
+        print(f"  {k}: {v}")
+    if res["indicators"]:
+        print("\nIndicators / reasons:")
+        for r in res["indicators"]:
+            print(" -", r)
+
+if __name__ == "__main__":
+    main()
