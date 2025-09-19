@@ -340,7 +340,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 
 ---------------------------------------------------------------
-NOTICE: This product includes software developed by CyberSh3ll0-oss.
+NOTICE: This product includes software developed by CyberSh3ll-oss.
 ---------------------------------------------------------------
 
 
