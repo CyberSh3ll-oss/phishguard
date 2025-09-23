@@ -30,6 +30,7 @@ BLACKLIST_FILE = "blacklist.txt"
 TIMEOUT = 6
 SUSPICIOUS_KEYWORDS = ("login", "secure", "account", "update", "verify",
                        "bank", "confirm", "signin", "paypal", "apple", "reset")
+TUNNELING_SERVICES = ("trycloudflare.com", "ngrok.io", "localtunnel.me", "localhost.run")
 # ----------------------------
 
 def normalize_url(u: str) -> str:
@@ -101,6 +102,11 @@ def heuristic_score(url: str):
         score += 4
         reasons.append("Double slashes in path")
 
+    # Detect tunneling services
+    if any(tunnel in host for tunnel in TUNNELING_SERVICES):
+        score += 25
+        reasons.append("URL uses tunneling service (e.g., Cloudflare, Ngrok)")
+
     return score, reasons
 
 def verdict(score: int) -> str:
@@ -153,7 +159,8 @@ def analyze(url: str, blacklist_path: str):
             out["indicators"].append("No HTTPS on final URL")
 
     # heuristics
-    hscore, hreasons = heuristic_score(url)
+    url_to_score = final if final else url  # Use final URL if available
+    hscore, hreasons = heuristic_score(url_to_score)
     out["checks"]["heuristic_score"] = hscore
     out["checks"]["heuristic_reasons"] = hreasons
     out["score"] += hscore
