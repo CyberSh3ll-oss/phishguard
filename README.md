@@ -44,7 +44,7 @@ README.md # project documentation
 
 1. **Clone the repository**
    ```bash
-   git clone https://github.com/yourusername/phishguard.git
+   git clone https://github.com/CyberSh3ll-oss/phishguard.git
    cd phishguard
 
 
